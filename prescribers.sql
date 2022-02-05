@@ -40,6 +40,19 @@ order by total_claims desc
 limit 1
 
 
+--first name and last name in one column
+SELECT
+	p1.npi,
+	p1.nppes_provider_first_name || ' ' || p1.nppes_provider_last_org_name AS name,
+	p1.specialty_description AS specialty,
+	SUM(p2.total_claim_count) AS total_claims
+FROM prescriber p1
+JOIN prescription p2 ON p1.npi = p2.npi
+GROUP BY 1,2,3
+ORDER BY 4 DESC
+
+
+
 --2. a. Which specialty had the most total number of claims (totaled over all drugs)?
 
 --family practice specialty has the highest number of claims (87,771,123)
@@ -54,7 +67,7 @@ ORDER BY 2 DESC
 --b. Which specialty had the most total number of claims for opioids?
 --Nurse Practitioner had the most total claims (8107605)
 SELECT specialty_description, 
-		SUM (total_claim_count) AS total_claims
+		TO_CHAR(SUM (total_claim_count), 'fm999G999D99') AS total_claims
 FROM prescription 
 INNER JOIN prescriber 
 USING (npi)
@@ -64,7 +77,21 @@ WHERE prescription.drug_name IN
 	 WHERE opioid_drug_flag='Y'
 	)
 GROUP BY specialty_description
-ORDER BY total_claims DESC
+ORDER BY total_claims DESC;
+
+
+
+SELECT specialty_description, 
+		SUM(total_claim_count) AS total_claims
+FROM prescription
+INNER JOIN prescriber
+USING (npi)
+INNER JOIN drug
+USING (drug_name)
+WHERE opioid_drug_flag = 'Y'
+GROUP BY specialty_description
+ORDER BY total_claims DESC;
+
 
 --c. Challenge Question: Are there any specialties that appear in the prescriber table that have no associated prescriptions in the prescription table?
 --There are 15 specialties that appear only in the prescriber table
@@ -77,6 +104,25 @@ WHERE specialty_description NOT IN
 		(SELECT npi
 		FROM prescription)
 	)
+
+SELECT DISTINCT specialty_description, 
+				SUM(total_claim_count) AS total_claims
+FROM prescriber
+FULL JOIN prescription
+ON prescriber.npi = prescription.npi
+GROUP BY specialty_description
+HAVING (SUM(total_claim_count) IS NULL)
+ORDER BY total_claims;
+
+
+SELECT
+	p1.specialty_description AS specialty,
+	COALESCE(SUM(p2.total_claim_count), 0) AS total_claims
+FROM prescriber p1
+LEFT JOIN prescription p2 ON p1.npi = p2.npi
+GROUP BY 1
+ORDER BY 2 ;
+
 
 /*d. Difficult Bonus: Do not attempt until you have solved all other problems! For each specialty, report the percentage of
 total claims by that specialty which are for opioids. Which specialties have a high percentage of opioids?*/
@@ -95,27 +141,44 @@ GROUP BY generic_name
 ORDER BY most_expensive_drug DESC
 
 
+SELECT generic_name, total_drug_cost
+FROM prescription
+LEFT JOIN drug
+USING (drug_name)
+order by total_drug_cost DESC
+limit 1
+
+--this gives us "INSULIN GLARGINE,HUM.REC.ANLOG"
+SELECT generic_name, SUM(total_drug_cost)::MONEY
+FROM prescription 
+INNER JOIN drug
+USING(drug_name)
+GROUP BY generic_name
+ORDER BY 2 DESC;
+
 /*b. Which drug (generic_name) has the hightest total cost per day? 
 **Bonus: Round your cost per day column to 2 decimal places. Google ROUND to see how this works.*/
---"ASFOTASE ALFA" has the highest cost per day
+--"C1 ESTERASE INHIBITOR" has the highest cost per day
 
-SELECT 
-	generic_name, 
-	ROUND(total_drug_cost / total_30_day_fill_count, 2) AS cost_per_day
-FROM drug
-INNER JOIN prescription
+SELECT generic_name, 
+		ROUND(SUM(total_drug_cost)/SUM(total_day_supply), 2)
+FROM prescription
+LEFT JOIN drug
 USING (drug_name)
-ORDER BY cost_per_day DESC
+GROUP BY generic_name
+ORDER BY 2 DESC
+LIMIT 1;
 
 /* 4. a. For each drug in the drug table, return the drug name and then a column named 'drug_type' which says 
 'opioid' for drugs which have opioid_drug_flag = 'Y', says 'antibiotic' for those drugs which have antibiotic_drug_flag = 'Y', 
 and says 'neither' for all other drugs. */
 
 SELECT drug_name,
-		CASE WHEN opioid_drug_flag='Y' THEN 'opioid'
+		CASE 
+			WHEN opioid_drug_flag='Y' THEN 'opioid'
 			WHEN antibiotic_drug_flag='Y' THEN 'antibiotic'
 			ELSE 'neither'
-			END AS drug_type
+		END AS drug_type
 FROM drug
 ORDER BY drug_type
 
@@ -124,17 +187,66 @@ Hint: Format the total costs as MONEY for easier comparision. */
 
 --more money is sepnt on opioids ($945,725,637.33) than antibiotics ($345,916,091.34)
 SELECT 
-		CASE WHEN opioid_drug_flag='Y' THEN 'opioid'
+		CASE 
+			WHEN opioid_drug_flag='Y' THEN 'opioid'
 			WHEN antibiotic_drug_flag='Y' THEN 'antibiotic'
 			ELSE 'neither'
-			END AS drug_type,
-			SUM(total_drug_cost)::money AS total_drug_cost
+		END AS drug_type,
+		SUM(total_drug_cost)::money AS total_drug_cost
 FROM drug
 INNER JOIN prescription 
 USING (drug_name)
 GROUP BY drug_type
 ORDER BY total_drug_cost DESC 
-	   
+
+
+--using cte
+WITH cteDrugType AS
+(
+	SELECT drug_name,
+		CASE WHEN opioid_drug_flag = 'Y'     THEN 'opioid'
+			 WHEN antibiotic_drug_flag = 'Y' THEN 'antibiotic'
+			 ELSE 'neither'
+		END AS drug_type
+	FROM drug
+)
+SELECT DISTINCT cdt.drug_type, 
+	SUM(p.total_drug_cost::money) AS drug_cost
+FROM cteDrugType cdt
+INNER JOIN prescription p
+ON cdt.drug_name = p.drug_name
+WHERE cdt.drug_type <> 'neither'
+GROUP BY cdt.drug_type
+ORDER BY drug_cost DESC;
+
+
+
+SELECT drug_type, 
+		SUM(total_drug_cost :: MONEY)
+FROM prescription as p
+FULL JOIN
+(SELECT drug_name,
+ CASE WHEN opioid_drug_flag = 'Y' THEN 'opioid'
+        -- Second case
+        WHEN antibiotic_drug_flag = 'Y' THEN 'antibiotic'
+        -- Else clause + end
+        ELSE 'neither' 
+		END AS drug_type
+FROM drug) AS flags
+USING (drug_name)
+WHERE drug_type = 'opioid' OR drug_type = 'antibiotic'
+GROUP BY drug_type
+order by SUM(total_drug_cost:: MONEY) desc;
+
+
+--count of opioid drugs
+SELECT
+	drug_name,
+	COUNT(DISTINCT opioid_drug_flag)
+FROM drug
+GROUP BY 1
+ORDER BY 2 DESC
+
 -- 5a. How many CBSAs are in Tennessee? **Warning:** The cbsa table contains information for all states, not just Tennessee.
 --There are 10 CBSAs
 SELECT COUNT (DISTINCT cbsaname)
@@ -143,6 +255,11 @@ INNER JOIN fips_county
 USING (fipscounty)
 WHERE state='TN'
 	   
+
+SELECT COUNT(DISTINCT cbsa)
+FROM cbsa
+WHERE cbsaname LIKE '%TN%';
+
 
 SELECT COUNT (DISTINCT cbsaname)
 FROM fips_county
@@ -173,9 +290,10 @@ INNER Join population
 USING (fipscounty)
 GROUP BY cbsaname
 ORDER BY total_population 
+
 		
 -- 5c. What is the largest (in terms of population) county which is not included in a CBSA? Report the county name and population.
---Seview with population of 95,523 is the largest county not included in a CBSA
+--Sevier with population of 95,523 is the largest county not included in a CBSA
 SELECT county, 
 		population
 FROM cbsa
@@ -196,6 +314,22 @@ USING (fipscounty)
 WHERE cbsa IS NULL
 AND population IS NOT NULL
 ORDER BY population DESC
+
+
+SELECT county, state, SUM(population) AS total_pop
+FROM fips_county
+INNER JOIN population
+USING(fipscounty)
+WHERE county NOT IN 
+(
+	SELECT county
+	FROM cbsa
+	INNER JOIN fips_county
+	USING(fipscounty)
+	WHERE cbsaname LIKE '%TN%'
+)
+GROUP BY county,state
+ORDER BY total_pop DESC;
 
 -- 6. a. Find all rows in the prescription table where total_claims are at least 3000. Report the drug_name and the total_claim_count.
 --"OXYCODONE HCL" drug name
@@ -282,8 +416,135 @@ ORDER BY total_claim_count DESC
 LIMIT 10
 
 
+--PART 2
+
+--1. How many npi numbers appear in the prescriber table but not in the prescription table?
+--75150
+SELECT COUNT(npi)
+FROM prescriber 
+WHERE npi NOT IN 
+	(SELECT npi
+	FROM prescription
+	 )
+
+--2.a. Find the top five drugs (generic_name) prescribed by prescribers with the specialty of Family Practice.
+
+SELECT generic_name, SUM(total_claim_count) AS sum_total_count
+FROM prescriber
+INNER JOIN prescription
+USING (npi)
+INNER JOIN drug
+USING(drug_name)
+WHERE specialty_description= 'Family Practice'
+GROUP BY generic_name
+ORDER BY sum_total_count DESC
 
 
+
+--b. Find the top five drugs (generic_name) prescribed by prescribers with the specialty of Cardiology.
+SELECT generic_name, SUM(total_claim_count) AS sum_total_count
+FROM prescriber
+INNER JOIN prescription
+USING (npi)
+INNER JOIN drug
+USING(drug_name)
+WHERE specialty_description= 'Cardiology'
+GROUP BY generic_name
+ORDER BY sum_total_count DESC
+
+
+--c. Which drugs appear in the top five prescribed for both Family Practice prescribers and Cardiologists? Combine what you did for parts a and b into a single query to answer this question.
+SELECT generic_name, SUM(total_claim_count) AS sum_total_count
+FROM prescriber
+INNER JOIN prescription
+USING (npi)
+INNER JOIN drug
+USING(drug_name)
+WHERE specialty_description= 'Family Practice' OR specialty_description= 'Cardiology'
+GROUP BY generic_name
+ORDER BY sum_total_count DESC
+
+
+--3. Your goal in this question is to generate a list of the top prescribers in each of the major metropolitan areas of Tennessee.
+--a. First, write a query that finds the top 5 prescribers in Nashville in terms of the total number of claims (total_claim_count) across all drugs. 
+--Report the npi, the total number of claims, and include a column showing the city.
+--b. Now, report the same for Memphis.
+--c. Combine your results from a and b, along with the results for Knoxville and Chattanooga.
+
+
+
+SELECT npi, 
+		SUM(total_claim_count) AS total_num_claims, 
+		nppes_provider_first_name || ' ' || nppes_provider_last_org_name AS provider, 
+		nppes_provider_city 
+FROM prescriber
+INNER JOIN prescription 
+USING (npi)
+INNER JOIN drug
+USING (drug_name)
+WHERE nppes_provider_city = 'MEMPHIS' OR nppes_provider_city = 'NASHVILLE' OR nppes_provider_city = 'KNOXVILLE' OR nppes_provider_city = 'CHATTANOOGA'
+GROUP BY npi, provider, nppes_provider_city
+ORDER BY total_num_claims DESC
+LIMIT 20
+
+--4. Find all counties which had an above-average (for the state) number of overdose deaths in 2017. 
+--Report the county name and number of overdose deaths.
+
+SELECT county, state, overdose_deaths
+FROM fips_county
+INNER JOIN overdose_deaths
+USING(fipscounty)
+WHERE year='2017' AND overdose_deaths >
+	(SELECT AVG(overdose_deaths) AS avg_overdose_deaths
+	FROM overdose_deaths
+	INNER JOIN fips_county 
+	USING (fipscounty)
+	WHERE year='2017' AND state='TN')
+GROUP BY county, state, overdose_deaths
+ORDER By overdose_deaths DESC
+
+
+--5.a. Write a query that finds the total population of Tennessee.
+--population is 6,597,381
+SELECT SUM(population) AS state_pop
+FROM population
+INNER JOIN fips_county
+USING (fipscounty)
+
+
+--b. Build off of the query that you wrote in part a to write a query that returns for each county that county's name, 
+--its population, and the percentage of the total population of Tennessee that is contained in that county.
+
+SELECT county, population, round(100 * population / (SELECT sum(population) 
+	FROM population
+	INNER JOIN fips_county
+	USING (fipscounty)), 2) AS percent_population
+FROM population
+INNER JOIN fips_county
+USING (fipscounty)
+
+--with CTE
+WITH state_pop AS 
+(
+SELECT SUM(population) AS state_population
+FROM population
+INNER JOIN fips_county
+USING (fipscounty)
+),
+
+county_pop AS 
+(
+SELECT county, SUM(population) AS county_population
+FROM population
+INNER JOIN fips_county
+USING (fipscounty)
+GROUP BY county
+)
+
+SELECT county, county_population,
+	ROUND(county_population * 100.00/ (SELECT state_population FROM state_pop), 2) AS percentage
+	FROM county_pop
+	
 
 
 
